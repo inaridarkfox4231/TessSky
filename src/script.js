@@ -220,6 +220,28 @@ document.body.addEventListener( 'click', function(event) {
 // めんどくさい
 // 色指定で#表記が可能になるように仕様変更しました
 
+// 床の色を変える準備してる
+// 取得時は文字列からでも取得できるようにする処理を忘れずに
+// それでいける
+// worldタブを用意しましょうね
+// 空の色もついでに変えちゃうか
+
+// uTextureColorがproper取得になってないバグを修正しました
+
+// 5,6,7ですね～
+// 5の青海波はそのままでOK!
+// 6のこうじつなぎは内部で
+/*
+"  p *= mat2(0.5,-sqrt(3.0)*0.5,0.5,sqrt(3.0)*0.5);" + // これを掛ければいい
+"  p = fract(p*4.0);" + // ついでに4倍して
+*/
+// 7のあさのはは内部で
+/*
+"  p.y = fract(p.y*2.0/sqrt(3.0));" + // ここでyにこうしたあとで
+"  p = fract(p*2.0);" + // 2倍でOKです。これでOKですね～
+*/
+// をすればOKですね～
+
 // --------------------------------------------------------------- //
 // prepare GUI.
 // setup内で呼び出す予定。
@@ -253,6 +275,9 @@ const TEXTURE_RANDOM = 1; // ランダム
 const TEXTURE_CHECK = 2; // とりあえず3つ
 const TEXTURE_CLOUD = 3;
 const TEXTURE_TRIANGLES = 4;
+const TEXTURE_SEIGAIHA = 5;
+const TEXTURE_KOJI = 6;
+const TEXTURE_ASANOHA = 7;
 
 let config = {
   boardHeight:10,
@@ -281,6 +306,9 @@ let config = {
   flowerN:2, // 1～30
   flowerR:160, // 80～320
   flowerRatio:0.3, // 0.0～1.0
+  floorColor:{r:0, g:178, b:255},
+  floorTextureType:TEXTURE_TRIANGLES,
+  skyColor:{r:0, g:178,b:255}
 }
 // flowerのdetailは800でいいやね（うん）
 
@@ -296,7 +324,7 @@ function startGUI(){
   objectFolder.add(config, 'boardHeight', 1, 40, 1);
   objectFolder.add(config, 'drawMode', {'BOARD':MODE_BOARD, 'BEVEL':MODE_BEVEL, 'DIMPLE':MODE_DIMPLE}).name('mode');
   objectFolder.add(config, 'splitFlag').name('split');
-  objectFolder.add(config, 'textureType', {'NONE':TEXTURE_NONE, 'RANDOM':TEXTURE_RANDOM, 'CHECK':TEXTURE_CHECK, 'CLOUD':TEXTURE_CLOUD, 'TRIANGLES':TEXTURE_TRIANGLES}).name('texture');
+  objectFolder.add(config, 'textureType', {'NONE':TEXTURE_NONE, 'RANDOM':TEXTURE_RANDOM, 'CHECK':TEXTURE_CHECK, 'CLOUD':TEXTURE_CLOUD, 'TRIANGLES':TEXTURE_TRIANGLES, 'SEIGAIHA': TEXTURE_SEIGAIHA, 'KOJITSUNAGI':TEXTURE_KOJI, 'ASANOHA':TEXTURE_ASANOHA}).name('texture');
   objectFolder.add(config, 'waveFlag').name('wave');
   // アクションモード変更用
   let moveFolder = gui.addFolder('move');
@@ -328,6 +356,10 @@ function startGUI(){
   flowerFolder.add(config, 'flowerN', 1, 30, 1).name('n');
   flowerFolder.add(config, 'flowerR', 80, 320, 1).name('radius');
   flowerFolder.add(config, 'flowerRatio', 0, 1, 0.01).name('ratio');
+  let worldFolder = gui.addFolder('World');
+  worldFolder.addColor(config, 'floorColor');
+  worldFolder.add(config, 'floorTextureType', {'NONE':TEXTURE_NONE, 'RANDOM':TEXTURE_RANDOM, 'CHECK':TEXTURE_CHECK, 'CLOUD':TEXTURE_CLOUD, 'TRIANGLES':TEXTURE_TRIANGLES, 'SEIGAIHA': TEXTURE_SEIGAIHA, 'KOJITSUNAGI':TEXTURE_KOJI, 'ASANOHA':TEXTURE_ASANOHA}).name('texture');
+  worldFolder.addColor(config, 'skyColor');
   // うっかりセーブしないようにフォルダにいれとく
   let colorAndSaveFolder = gui.addFolder('Color/Save');
   colorAndSaveFolder.addColor(config, 'mainColor');
@@ -370,6 +402,34 @@ let activatedClassName = "";
 
 // --------------------------------------------------------------- //
 // shader.
+
+// テクスチャ関連の関数は床の模様とオブジェクト用で使い回す
+let forTexture =
+// テクスチャサンプリングのための前処理
+"vec2 prepareForTexture(vec2 p){" +
+"  if(uTextureId == 6.0){" + // 工字繋ぎ
+"    p *= mat2(0.5,-sqrt(3.0)*0.5,0.5,sqrt(3.0)*0.5);" +
+"    p = fract(p*4.0);" + // ついでに4倍
+"  }else if(uTextureId == 7.0){" + // あさのは
+"    p.y = fract(p.y*2.0/sqrt(3.0));" + // ここでyにこうしたあとで
+"    p = fract(p);" + // fract.
+"  }else{" +
+"    p = fract(p);" +
+"  }" +
+"  return p;" +
+"}" +
+// テクスチャサンプリング
+"float getAmount(vec2 tex){" +
+"  float offsetX = mod(uTextureId, 4.0) * 0.25;" +
+"  float offsetY = floor(uTextureId / 4.0) * 0.25;" +
+"  float delta = 1.0/uTextureSize;" +
+// つなぎ目の不自然さを消すための処理。暫定処理だけどこれでいこう。
+"  tex.x = clamp(tex.x, delta, 1.0-delta);" +
+"  tex.y = clamp(tex.y, delta, 1.0-delta);" +
+"  vec2 _tex = vec2(offsetX, offsetY) + tex*0.25;" +
+"  float amt = texture2D(uTextureTable, _tex).r;" +
+"  return amt;" +
+"}";
 
 let lightVert=
 "precision mediump float;" +
@@ -476,18 +536,7 @@ let lightFrag =
 "varying vec3 vViewPosition;" +
 "varying vec3 vAmbientColor;" +
 "varying vec2 vTexCoord;" +
-// テクスチャサンプリング
-"float getAmount(vec2 tex){" +
-"  float offsetX = mod(uTextureId, 4.0) * 0.25;" +
-"  float offsetY = floor(uTextureId / 4.0) * 0.25;" +
-"  float delta = 1.0/uTextureSize;" +
-// つなぎ目の不自然さを消すための処理。暫定処理だけどこれでいこう。
-"  tex.x = clamp(tex.x, delta, 1.0-delta);" +
-"  tex.y = clamp(tex.y, delta, 1.0-delta);" +
-"  vec2 _tex = vec2(offsetX, offsetY) + tex*0.25;" +
-"  float amt = texture2D(uTextureTable, _tex).r;" +
-"  return amt;" +
-"}" +
+forTexture +
 // メインコード
 "void main(void){" +
 "  vec3 diffuse = totalLight(vViewPosition, normalize(vNormal));" +
@@ -501,12 +550,11 @@ let lightFrag =
 "  }" +
 // ポストエフェクト(黒：元の色、白：テクスチャ固有色)
 //"  if(uUseNoiseTexture){" +
-"    vec2 tex = vTexCoord;" +
-"    tex = fract(tex);" +
-"    tex.y = 1.0 - tex.y;" +
-"    float amt = getAmount(tex);" +
+"  vec2 tex = vTexCoord;" +
+"  tex = prepareForTexture(tex);" + // 事前の処理
+"  float amt = getAmount(tex);" +
 //"    float amt = texture2D(uNoiseTex, tex).r;" +
-"    col.rgb = (1.0 - amt) * col.rgb + amt * uTextureColor;" +
+"  col.rgb = (1.0 - amt) * col.rgb + amt * uTextureColor;" +
 //"  }" +
   // diffuseの分にambient成分を足してrgbに掛けて色を出してspecular成分を足して完成みたいな（？？）
 "  col.rgb *= (diffuse + vAmbientColor);" +
@@ -553,6 +601,9 @@ const skyFrag =
 "uniform vec3 uUp;" + // -y.
 "uniform sampler2D uTextureTable;" +
 "uniform float uTextureSize;" +
+"uniform float uTextureId;" + // テクスチャId
+"uniform vec3 uFloorColor;" + // 床の色
+"uniform vec3 uBaseSkyColor;" + // 空の色
 // getRGB.
 "vec3 getRGB(float h, float s, float b){" +
 "  vec3 c = vec3(h, s, b);" +
@@ -560,10 +611,12 @@ const skyFrag =
 "  rgb = rgb * rgb * (3.0 - 2.0 * rgb);" +
 "  return c.z * mix(vec3(1.0), rgb, c.y);" +
 "}" +
+forTexture +
 // 空の色
 "vec3 getSkyColor(vec3 eye, vec3 ray){" +
 "  float z = ray.z + 0.05;" +
-"  vec3 skyColor = getRGB(0.55, sqrt(z * (2.0 - z)), 1.0);" +
+"  float amt = sqrt(z*(2.0-z));" +
+"  vec3 skyColor = uBaseSkyColor*amt + vec3(1.0)*(1.0-amt);" +
 "  return skyColor;" +
 "}" +
 // 床
@@ -575,15 +628,17 @@ const skyFrag =
 "  vec2 q = eye.xy + t * ray.xy;" +
 "  vec2 iq = floor(q/64.0);" +
 "  vec3 result;" +
-"  vec3 mainColor = getRGB(0.55, 1.0, 1.0);" +
-"  vec3 subColor = getRGB(0.55, 0.0, 1.0);" +
-"  vec2 offset = vec2(0.0, 0.25);" +
-"  vec2 tex = fract(q/1024.0);" +
-"  float delta = 1.0/uTextureSize;" +
-"  tex.x = clamp(tex.x, delta, 1.0-delta);" +
-"  tex.y = clamp(tex.y, delta, 1.0-delta);" +
-"  float amt = texture2D(uTextureTable, offset + 0.25 * tex).r;" +
-"  result = (1.0-amt)*mainColor+amt*subColor;" +
+//"  vec3 mainColor = vec3(0.0, 0.7, 1.0);" +
+"  vec3 textureColor = vec3(1.0);" +
+//"  vec2 offset = vec2(0.0, 0.25);" +
+//"  vec2 tex = fract(q/1024.0);" +
+//"  float delta = 1.0/uTextureSize;" +
+//"  tex.x = clamp(tex.x, delta, 1.0-delta);" +
+//"  tex.y = clamp(tex.y, delta, 1.0-delta);" +
+//"  float amt = texture2D(uTextureTable, offset + 0.25 * tex).r;" +
+"  vec2 tex = prepareForTexture(q/1024.0);" + // 事前の処理
+"  float amt = getAmount(tex);" +
+"  result = (1.0-amt)*uFloorColor+amt*textureColor;" +
 //"  if(mod(iq.x + iq.y, 2.0) == 0.0){" +
 //"    result = mainColor; }else{" +
 //"    result = subColor; }" +
@@ -617,7 +672,6 @@ function preload(){
   fonts.push(loadFont("https://inaridarkfox4231.github.io/assets/beastMINI.otf"));
   fonts.push(loadFont("https://inaridarkfox4231.github.io/assets/HannariMincho-Regular.otf"));
   textureTableSource = loadImage("https://inaridarkfox4231.github.io/assets/texture/textureTable.png");
-  //textureTableSource = loadImage("test.png");
 }
 
 // --------------------------------------------------------------- //
@@ -706,6 +760,8 @@ function draw(){
   // 空
   gl.disable(gl.DEPTH_TEST);
   camera(0, 0, height * 0.5 * Math.sqrt(3.0), 0, 0, 0, 0, 1, 0);
+  const {r:fr, g:fg, b:fb} = getProperColor(config.floorColor);
+  const {r:sr, g:sg, b:sb} = getProperColor(config.skyColor);
   _node.use('sky', 'plane')
        .setAttribute()
        .setUniform("uResolution", [width, height])
@@ -716,6 +772,9 @@ function draw(){
        .setUniform("uSide", [sideVector.x, sideVector.y, sideVector.z])
        .setUniform("uUp", [upVector.x, upVector.y, upVector.z])
        .setUniform("uTextureSize", 256.0)
+       .setUniform("uTextureId", config.floorTextureType)
+       .setUniform("uFloorColor", [fr/255, fg/255, fb/255])
+       .setUniform("uBaseSkyColor", [sr/255, sg/255, sb/255])
        .setTexture('uTextureTable', textureTable.glTex, 0)
        .drawArrays(gl.TRIANGLE_STRIP)
        .clear();
@@ -1742,7 +1801,7 @@ class Tessellator{
     // テクスチャ関連
     const textureId = config.textureType; // いずれは・・パターン増やす。
     const waveFlag = config.waveFlag;
-    const textureColor = config.textureColor;
+    const textureColor = getProperColor(config.textureColor);
     let p = g.copy(); // 初期位置
 
     // 初期位置の計算(カメラに合わせる処理)
@@ -1847,22 +1906,6 @@ class Tessa{
     this.textureColor = textureColor;
     this.properFrameCount = 0;
   }
-  /*
-  setRotationSpeed(){
-    // 0.00～0.05で50段階にする
-    this.rotationSpeedZ = 0.02 + Math.random() * 0.03;
-    this.rotationSpeedX = 0.02 + Math.random() * 0.03;
-  }
-  setVelocity(){
-    // 0.0～8.0で80段階にする
-    // phiとthetaはそれぞれ50段階で~6と~3でそんな感じで
-    const speed = 4 + Math.random() * 4;
-    const phi = Math.random() * TAU;
-    const theta = Math.random() * PI;
-    // とりあえず2次元で
-    this.velocity.set(speed * Math.cos(phi) * Math.cos(theta), speed * Math.sin(phi) * Math.cos(theta), speed * Math.sin(theta));
-  }
-  */
   update(){
     const nextX = this.positionDiff.x + this.velocity.x;
     const nextY = this.positionDiff.y + this.velocity.y;
